@@ -165,6 +165,7 @@ export function createWorld(random) {
   function startWave(n) {
     state.wave = n;
     state.waveTime = 0;
+    state.cleared = false;
     state.spawnQueue = [];
     for (const group of WAVE_TABLE[n] || []) {
       for (let i = 0; i < group.count; i += 1) {
@@ -562,7 +563,10 @@ export function createWorld(random) {
     particles.step(dt);
 
     // The wave is clear when nothing is left to spawn and nothing is alive.
-    if (state.spawnQueue.length === 0 && state.enemies.length === 0 && !state.over) {
+    // Fires once per wave: the flag stops the bonus and the upgrade offer
+    // repeating on every step until the next wave starts.
+    if (state.spawnQueue.length === 0 && state.enemies.length === 0 && !state.over && !state.cleared) {
+      state.cleared = true;
       state.score += WAVE_CLEAR_BONUS * state.wave;
       if (state.wave >= WAVES) {
         state.won = true;
