@@ -24,7 +24,9 @@ export const PLAYER = {
   invulnerableSeconds: 0.8,
 };
 export const WAVES = 10;
-export const BOSS_WAVES = [5, 10];
+export const BOSS_WAVES = [5, 7, 10];
+export const ENDLESS_START = WAVES + 1;
+export const NOVA_INTERVAL = 9;
 export const COMBO_WINDOW = 3;
 export const EMBER_SCORE = 25;
 export const WAVE_CLEAR_BONUS = 100;

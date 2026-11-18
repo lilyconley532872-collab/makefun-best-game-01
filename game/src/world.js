@@ -2,9 +2,11 @@
 // bullets, pickups, waves, bosses, upgrades, score and combo. The renderer
 // only reads state; main.js only calls reset/step and the wave functions.
 // A step returns a bitmask of events so main.js can play sounds and announce.
-import { COMBO_WINDOW, EMBER_SCORE, FIELD, LANTERN, PLAYER, WAVE_CLEAR_BONUS, WAVES } from './config.js';
-import { KINDS, WAVE_TABLE, scaledStats } from './enemies.js';
+import { COMBO_WINDOW, EMBER_SCORE, ENDLESS_START, FIELD, LANTERN, NOVA_INTERVAL, PLAYER, WAVE_CLEAR_BONUS, WAVES } from './config.js';
+import { KINDS, scaledStats, waveTableFor } from './enemies.js';
 import { UPGRADES, drawUpgrades } from './upgrades.js';
+import { DIFFICULTIES } from './meta.js';
+import { realmForWave } from './realms.js';
 import { createParticles } from './particles.js';
 
 export const EVENT_HIT = 1;
@@ -17,6 +19,7 @@ export const EVENT_OVER = 64;
 export const EVENT_WIN = 128;
 export const EVENT_BOSS = 256;
 export const EVENT_UPGRADE = 512;
+export const EVENT_NOVA = 1024;
 
 function baseStats() {
   return {
@@ -34,6 +37,14 @@ function baseStats() {
     slow: false,
     bulletSpeed: PLAYER.bulletSpeed,
     bulletRange: PLAYER.bulletRange,
+    bulletRadius: PLAYER.bulletRadius,
+    nova: 0,
+    bulwark: 0,
+    secondWind: false,
+    ricochet: 0,
+    emberMul: 0,
+    lightMul: 0,
+    aura: 0,
   };
 }
 
@@ -51,6 +62,10 @@ export function createWorld(random) {
   const state = {
     player: null,
     lanternHp: LANTERN.maxHp,
+    lanternMaxHp: LANTERN.maxHp,
+    difficulty: 'keeper',
+    endless: false,
+    realm: realmForWave(1),
     wave: 0,
     waveTime: 0,
     score: 0,
@@ -74,24 +89,42 @@ export function createWorld(random) {
     taken: {},
     offered: [],
     boss: null,
+    novaTimer: 0,
+    secondWindUsed: false,
   };
 
   function lightRadius() {
-    const f = state.lanternHp / LANTERN.maxHp;
-    return LANTERN.lightLow + (LANTERN.lightFull - LANTERN.lightLow) * f;
+    const f = state.lanternHp / state.lanternMaxHp;
+    const base = LANTERN.lightLow + (LANTERN.lightFull - LANTERN.lightLow) * f;
+    return base * (1 + (state.stats.lightMul || 0));
   }
 
-  function reset() {
+  /** The difficulty this run plays on (a DIFFICULTIES entry). */
+  function difficulty() {
+    return DIFFICULTIES[state.difficulty] || DIFFICULTIES.keeper;
+  }
+
+  /** The realm the current wave belongs to. */
+  function realm() {
+    return state.realm;
+  }
+
+  function reset(difficultyId, lanternBonus) {
+    const diff = DIFFICULTIES[difficultyId] || DIFFICULTIES.keeper;
+    state.difficulty = diff.id;
+    state.lanternMaxHp = diff.lanternHp + (lanternBonus || 0);
+    state.endless = false;
+    state.realm = realmForWave(1);
     state.player = {
       x: LANTERN.x,
       y: LANTERN.y + 120,
-      hp: PLAYER.maxHp,
+      hp: diff.playerHp,
       aim: -Math.PI / 2,
       fireCooldown: 0,
       invulnerable: 0,
       trailTimer: 0,
     };
-    state.lanternHp = LANTERN.maxHp;
+    state.lanternHp = state.lanternMaxHp;
     state.wave = 0;
     state.waveTime = 0;
     state.score = 0;
@@ -112,10 +145,21 @@ export function createWorld(random) {
     state.shake = 0;
     state.time = 0;
     state.stats = baseStats();
+    state.stats.maxHp = diff.playerHp;
     state.taken = {};
     state.offered = [];
     state.boss = null;
+    state.novaTimer = 0;
+    state.secondWindUsed = false;
     particles.clear();
+  }
+
+  /** After a win, keep playing: waves past 10, growing without end. */
+  function continueEndless() {
+    state.endless = true;
+    state.won = false;
+    state.over = false;
+    startWave(ENDLESS_START);
   }
 
   function comboMultiplier() {
@@ -123,7 +167,7 @@ export function createWorld(random) {
   }
 
   function addScore(base, x, y, big) {
-    const gained = Math.round(base * comboMultiplier());
+    const gained = Math.round(base * comboMultiplier() * difficulty().scoreMul);
     state.score += gained;
     if (x !== undefined) particles.floatText(x, y, `+${gained}`, '#ffd76b', big);
     return gained;
@@ -131,7 +175,7 @@ export function createWorld(random) {
 
   function spawnEnemy(kind) {
     const def = KINDS[kind];
-    const scaled = scaledStats(kind, state.wave);
+    const scaled = scaledStats(kind, state.wave, difficulty());
     const pos = edgeSpawn(random);
     const enemy = {
       kind,
@@ -167,14 +211,24 @@ export function createWorld(random) {
     state.waveTime = 0;
     state.cleared = false;
     state.spawnQueue = [];
-    for (const group of WAVE_TABLE[n] || []) {
+    for (const group of waveTableFor(n)) {
       for (let i = 0; i < group.count; i += 1) {
         state.spawnQueue.push({ kind: group.kind, at: group.at + i * group.gap });
       }
     }
     state.spawnQueue.sort((a, b) => a.at - b.at);
-    state.banner = `WAVE ${n} / ${WAVES}`;
-    state.bannerTimer = 2;
+    const nextRealm = realmForWave(n);
+    if (nextRealm.id !== state.realm.id) {
+      state.realm = nextRealm;
+      state.banner = `REALM ${nextRealm.num} — ${nextRealm.name}`;
+      state.bannerTimer = 2.6;
+    } else if (state.endless) {
+      state.banner = `ENDLESS WAVE ${n}`;
+      state.bannerTimer = 2;
+    } else {
+      state.banner = `WAVE ${n} / ${WAVES}`;
+      state.bannerTimer = 2;
+    }
     if (n === 1) state.banner = 'WAVE 1 — THE DARK STIRS';
   }
 
@@ -220,7 +274,8 @@ export function createWorld(random) {
         travelled: 0,
         crit: random.chance(s.critChance),
         slow: s.slow,
-        radius: PLAYER.bulletRadius,
+        radius: s.bulletRadius,
+        ricochet: false,
       });
     }
     p.fireCooldown = s.fireInterval;
@@ -245,7 +300,7 @@ export function createWorld(random) {
     }
   }
 
-  function killEnemy(index, award) {
+  function killEnemy(index, award, fromRicochet) {
     const enemy = state.enemies[index];
     const def = KINDS[enemy.kind];
     state.enemies.splice(index, 1);
@@ -258,6 +313,35 @@ export function createWorld(random) {
       state.comboTimer = COMBO_WINDOW;
       addScore(def.score, enemy.x, enemy.y, def.boss);
       dropPickup(enemy);
+      // Ricochet Flame: a killing bolt bounces to the nearest other shade.
+      // A bounced bolt never bounces again, so the chain always ends.
+      if (state.stats.ricochet > 0 && !fromRicochet && state.enemies.length > 0) {
+        let nearest = null;
+        let nearestD = 320;
+        for (const other of state.enemies) {
+          const d = Math.hypot(other.x - enemy.x, other.y - enemy.y);
+          if (d < nearestD) {
+            nearestD = d;
+            nearest = other;
+          }
+        }
+        if (nearest) {
+          const a = Math.atan2(nearest.y - enemy.y, nearest.x - enemy.x);
+          state.bullets.push({
+            x: enemy.x, y: enemy.y,
+            vx: Math.cos(a) * state.stats.bulletSpeed,
+            vy: Math.sin(a) * state.stats.bulletSpeed,
+            damage: PLAYER.bulletDamage * state.stats.damageMul,
+            pierce: 0,
+            range: state.stats.bulletRange * 0.6,
+            travelled: 0,
+            crit: false,
+            slow: state.stats.slow,
+            radius: state.stats.bulletRadius,
+            ricochet: true,
+          });
+        }
+      }
       if (def.splits) {
         for (let i = 0; i < def.splits; i += 1) {
           const wisp = spawnEnemy('wisp');
@@ -272,6 +356,18 @@ export function createWorld(random) {
   function hurtPlayer(damage) {
     const p = state.player;
     if (p.invulnerable > 0 || state.over) return 0;
+    // Second Wind: once per run, a fatal blow leaves the Keeper at 50.
+    if (p.hp - damage <= 0 && state.stats.secondWind && !state.secondWindUsed) {
+      state.secondWindUsed = true;
+      p.hp = 50;
+      p.invulnerable = 2;
+      state.combo = 0;
+      state.comboTimer = 0;
+      state.shake = Math.max(state.shake, 10);
+      particles.ring(p.x, p.y, '#ffd76b', 30, 220);
+      particles.floatText(p.x, p.y - 30, 'SECOND WIND', '#ffd76b', true);
+      return EVENT_PLAYER_HURT;
+    }
     p.hp -= damage;
     p.invulnerable = PLAYER.invulnerableSeconds;
     state.combo = 0;
@@ -289,12 +385,14 @@ export function createWorld(random) {
 
   function hurtLantern(damage, x, y) {
     if (state.over) return 0;
-    state.lanternHp -= damage;
+    // Lantern Bulwark: the lantern takes less damage per stack.
+    const taken = Math.max(1, Math.round(damage * (1 - (state.stats.bulwark || 0))));
+    state.lanternHp -= taken;
     state.combo = 0;
     state.comboTimer = 0;
     state.shake = Math.max(state.shake, 5);
     particles.burst(x, y, '#7fd4ff', 12, 150, 0.4, 3);
-    particles.floatText(LANTERN.x, LANTERN.y - 40, `-${damage}`, '#7fd4ff', false);
+    particles.floatText(LANTERN.x, LANTERN.y - 40, `-${taken}`, '#7fd4ff', false);
     if (state.lanternHp <= 0) {
       state.lanternHp = 0;
       state.over = true;
@@ -357,8 +455,35 @@ export function createWorld(random) {
         const d = Math.hypot(e.x - f.x, e.y - f.y);
         if (d < f.radius + e.radius) {
           e.hp -= f.dps * dt;
-          if (e.hp <= 0) events |= killEnemy(j, true);
+          if (e.hp <= 0) events |= killEnemy(j, true, true);
         }
+      }
+    }
+
+    // Ember Nova: every few seconds a ring of bolts bursts from the Keeper.
+    if (s.nova > 0) {
+      state.novaTimer -= dt;
+      if (state.novaTimer <= 0) {
+        state.novaTimer = NOVA_INTERVAL;
+        const count = 8 + s.nova * 2;
+        for (let k = 0; k < count; k += 1) {
+          const a = (k / count) * Math.PI * 2;
+          state.bullets.push({
+            x: p.x, y: p.y,
+            vx: Math.cos(a) * s.bulletSpeed,
+            vy: Math.sin(a) * s.bulletSpeed,
+            damage: PLAYER.bulletDamage * s.damageMul,
+            pierce: 0,
+            range: s.bulletRange * 0.6,
+            travelled: 0,
+            crit: false,
+            slow: s.slow,
+            radius: s.bulletRadius,
+            ricochet: false,
+          });
+        }
+        particles.ring(p.x, p.y, '#ffd76b', 20, 200);
+        events |= EVENT_NOVA;
       }
     }
 
@@ -383,7 +508,7 @@ export function createWorld(random) {
             particles.floatText(e.x, e.y - e.radius - 6, String(Math.round(damage)), b.crit ? '#ffe066' : '#fff', b.crit);
             particles.burst(b.x, b.y, '#ffb347', 4, 110, 0.22, 2.5);
             events |= EVENT_HIT;
-            if (e.hp <= 0) events |= killEnemy(j, true);
+            if (e.hp <= 0) events |= killEnemy(j, true, b.ricochet);
             if (b.pierce > 0) {
               b.pierce -= 1;
             } else {
@@ -418,9 +543,14 @@ export function createWorld(random) {
       const dPlayer = Math.hypot(p.x - e.x, p.y - e.y);
       const slowed = state.time < e.slowUntil;
       let speed = e.speed * (slowed ? 0.7 : 1);
-      // Boss charge: the brute telegraphs, then rushes the Keeper.
+      // The Gloombrute enrages below half health: faster, and it charges sooner.
       if (e.kind === 'brute') {
         e.chargeTimer -= dt;
+        const enraged = e.hp < e.maxHp / 2;
+        if (enraged) {
+          speed *= 1.3;
+          e.chargeTimer -= dt * 0.6;
+        }
         if (e.charging > 0) {
           e.charging -= dt;
           speed *= 3;
@@ -460,6 +590,37 @@ export function createWorld(random) {
         }
         if (enraged) speed *= 1.4;
       }
+      // The Mire Queen summons spitters and fires radial bursts; enraged below half.
+      if (e.kind === 'queen') {
+        const enraged = e.hp < e.maxHp / 2;
+        e.summonTimer -= dt;
+        e.burstTimer -= dt * (enraged ? 1.4 : 1);
+        if (e.summonTimer <= 0) {
+          e.summonTimer = 6;
+          let alive = 0;
+          for (const other of state.enemies) if (other.kind === 'spitter') alive += 1;
+          for (let k = 0; k < 2 && alive < 6; k += 1, alive += 1) {
+            const sp = spawnEnemy('spitter');
+            sp.x = e.x + random.range(-50, 50);
+            sp.y = e.y + random.range(-50, 50);
+          }
+          particles.ring(e.x, e.y, '#37c8a3', 18, 140);
+        }
+        if (e.burstTimer <= 0) {
+          e.burstTimer = enraged ? 5 : 7;
+          const n = 10;
+          for (let k = 0; k < n; k += 1) {
+            const a = (k / n) * Math.PI * 2 + state.time;
+            state.enemyBullets.push({
+              x: e.x, y: e.y,
+              vx: Math.cos(a) * 150, vy: Math.sin(a) * 150,
+              damage: 10, radius: 7, life: 4,
+            });
+          }
+          particles.ring(e.x, e.y, '#37c8a3', 20, 200);
+        }
+        if (enraged) speed *= 1.4;
+      }
       // Spitters hold their range and lob globs at the lantern.
       if (def.ranged && dLantern < def.range && e.feedCooldown <= 0) {
         e.shotCooldown -= dt;
@@ -474,11 +635,21 @@ export function createWorld(random) {
         }
       } else {
         // Chase the lantern, but turn on the Keeper when he is close.
+        // Mirelurkers zigzag hard and surge as they swim.
         const target = dPlayer < 90 ? p : LANTERN;
         const a = Math.atan2(target.y - e.y, target.x - e.x);
-        const wob = Math.sin(state.time * 2 + e.wobble) * 0.25;
+        const wob = Math.sin(state.time * 2 + e.wobble) * (def.zigzag ? 0.9 : 0.25);
+        if (def.zigzag) speed *= 1 + 0.25 * Math.sin(state.time * 3 + e.wobble);
         e.x += Math.cos(a + wob) * speed * dt;
         e.y += Math.sin(a + wob) * speed * dt;
+      }
+      // Warding Flame: shades crowding the lantern burn.
+      if (s.aura > 0 && dLantern < LANTERN.radius + 70) {
+        e.hp -= 10 * s.aura * dt;
+        if (e.hp <= 0) {
+          events |= killEnemy(i, true, true);
+          continue;
+        }
       }
       // Touching the Keeper hurts him.
       if (dPlayer < e.radius + PLAYER.radius && p.invulnerable <= 0) {
@@ -518,7 +689,7 @@ export function createWorld(random) {
         if (state.over) return events;
       }
       if (!dead && Math.hypot(LANTERN.x - g.x, LANTERN.y - g.y) < LANTERN.radius + g.radius) {
-        events |= hurtLantern(4, g.x, g.y);
+        events |= hurtLantern(3, g.x, g.y);
         dead = true;
         if (state.over) return events;
       }
@@ -544,7 +715,7 @@ export function createWorld(random) {
         }
         if (pk.kind === 'ember') {
           state.embers += 1;
-          addScore(pk.value, pk.x, pk.y, false);
+          addScore(pk.value * (1 + (s.emberMul || 0)), pk.x, pk.y, false);
         } else {
           p.hp = Math.min(s.maxHp, p.hp + pk.value);
           particles.floatText(pk.x, pk.y, `+${pk.value} HP`, '#7dff9b', false);
@@ -567,8 +738,12 @@ export function createWorld(random) {
     // repeating on every step until the next wave starts.
     if (state.spawnQueue.length === 0 && state.enemies.length === 0 && !state.over && !state.cleared) {
       state.cleared = true;
-      state.score += WAVE_CLEAR_BONUS * state.wave;
-      if (state.wave >= WAVES) {
+      state.score += Math.round(WAVE_CLEAR_BONUS * state.wave * difficulty().scoreMul);
+      // The lantern catches its breath between waves: a small repair, so
+      // the steady drain of a long night can be outlasted by a Keeper who
+      // keeps clearing waves.
+      state.lanternHp = Math.min(state.lanternMaxHp, state.lanternHp + 25);
+      if (state.wave >= WAVES && !state.endless) {
         state.won = true;
         state.over = true;
         return events | EVENT_WIN;
@@ -586,6 +761,9 @@ export function createWorld(random) {
     applyUpgrade,
     lightRadius,
     comboMultiplier,
+    difficulty,
+    realm,
+    continueEndless,
     step,
   };
 }

@@ -1,11 +1,13 @@
 // Keyboard + mouse, read fresh every frame. Movement is WASD or arrows;
 // the mouse aims; holding the left button (or Space) fires. P or Escape
 // pauses; Enter or click confirms on menus; M toggles sound; R restarts on
-// the end screens. Number keys 1-3 pick an upgrade card.
+// the end screens; E carries a win into Endless Night. Number keys 1-3 pick
+// an upgrade card, or a difficulty on the title screen.
 export const ACTION_CONFIRM = 'confirm';
 export const ACTION_PAUSE = 'pause';
 export const ACTION_MUTE = 'mute';
 export const ACTION_RESTART = 'restart';
+export const ACTION_ENDLESS = 'endless';
 
 const MOVE_KEYS = {
   KeyW: [0, -1], ArrowUp: [0, -1],
@@ -98,6 +100,9 @@ export function createInput(canvas) {
     }
     if (name === ACTION_RESTART) {
       return pressed.has('KeyR');
+    }
+    if (name === ACTION_ENDLESS) {
+      return pressed.has('KeyE');
     }
     return false;
   }

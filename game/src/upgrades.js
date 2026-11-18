@@ -1,6 +1,10 @@
 // The draft between waves: three cards, pick one. Each upgrade changes how
 // the Keeper fights, so every run plays differently. `max` caps the stacks;
-// `apply` mutates the player's stats object.
+// `apply` mutates the player's stats object. Twenty boons in all: the
+// twelve of the first night, plus eight deeper ones — a nova that bursts
+// from the Keeper, a bulwark for the lantern, a second wind, ricocheting
+// bolts, a richer ember harvest, a heavier wick, a wider light and a
+// warding flame that burns shades near the lantern.
 export const UPGRADES = [
   {
     id: 'damage', name: 'Ember Rounds', max: 5,
@@ -61,6 +65,46 @@ export const UPGRADES = [
     id: 'range', name: 'Long Wick', max: 3,
     desc: '+25% bullet speed and range',
     apply(s) { s.bulletSpeed *= 1.25; s.bulletRange *= 1.25; },
+  },
+  {
+    id: 'nova', name: 'Ember Nova', max: 3,
+    desc: 'Every 9s, a ring of bolts bursts from you',
+    apply(s) { s.nova = (s.nova || 0) + 1; },
+  },
+  {
+    id: 'bulwark', name: 'Lantern Bulwark', max: 3,
+    desc: 'The lantern takes 15% less damage',
+    apply(s) { s.bulwark = (s.bulwark || 0) + 0.15; },
+  },
+  {
+    id: 'secondwind', name: 'Second Wind', max: 1,
+    desc: 'Once per run, survive a fatal blow at 50 health',
+    apply(s) { s.secondWind = true; },
+  },
+  {
+    id: 'ricochet', name: 'Ricochet Flame', max: 2,
+    desc: 'Killing bolts bounce to another shade',
+    apply(s) { s.ricochet = (s.ricochet || 0) + 1; },
+  },
+  {
+    id: 'harvest', name: 'Ember Harvest', max: 3,
+    desc: 'Embers are worth +50% score',
+    apply(s) { s.emberMul = (s.emberMul || 0) + 0.5; },
+  },
+  {
+    id: 'heavy', name: 'Heavy Wick', max: 3,
+    desc: '+30% bullet damage, +2 bullet size',
+    apply(s) { s.damageMul *= 1.3; s.bulletRadius = (s.bulletRadius || 5) + 2; },
+  },
+  {
+    id: 'surge', name: 'Lantern Surge', max: 3,
+    desc: '+20% light radius',
+    apply(s) { s.lightMul = (s.lightMul || 0) + 0.2; },
+  },
+  {
+    id: 'aura', name: 'Warding Flame', max: 3,
+    desc: 'Shades near the lantern burn for 10 damage a second',
+    apply(s) { s.aura = (s.aura || 0) + 1; },
   },
 ];
 

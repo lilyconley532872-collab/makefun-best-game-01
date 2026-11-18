@@ -147,6 +147,10 @@ export function createAudio() {
       tone(70, 0.7, 'sawtooth', 0.22, 45);
       noise(0.5, 0.16, 400);
     },
+    nova() {
+      tone(520, 0.18, 'sine', 0.12, 1560);
+      noise(0.12, 0.08, 2400);
+    },
     upgrade() {
       tone(660, 0.1, 'sine', 0.12, 660);
       setTimeout(() => tone(990, 0.14, 'sine', 0.12, 990), 90);

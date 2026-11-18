@@ -1,8 +1,11 @@
 // Everything the player sees: the dark glade, the lantern's light, the
 // shades, the Keeper, the HUD and every screen. The world only hands it
-// state; this file owns all the drawing.
+// state; this file owns all the drawing. Each realm paints its own night:
+// the Glade is warm dark, the Mire is cold teal, the Deep is violet.
 import { FIELD, LANTERN, PLAYER, WAVES } from './config.js';
 import { KINDS } from './enemies.js';
+import { UPGRADES } from './upgrades.js';
+import { DIFFICULTIES, DIFFICULTY_ORDER, nextRank, rankFor } from './meta.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -11,7 +14,10 @@ export const SCREEN_UPGRADE = 'upgrade';
 export const SCREEN_OVER = 'over';
 export const SCREEN_WIN = 'win';
 
-const DARK = 'rgba(4, 6, 16, 0.62)';
+// The difficulty rows on the title screen, and the Endless Night button on
+// the win screen: main.js reads clicks against these same rectangles.
+export const DIFFICULTY_ROWS = { x: 270, y: 440, w: 420, h: 20, gap: 2 };
+export const ENDLESS_BUTTON = { x: 350, y: 380, w: 260, h: 44 };
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
@@ -47,6 +53,14 @@ export function createRenderer(canvas) {
     view = { scale, ox: (canvas.width - FIELD.width * scale) / 2, oy: (canvas.height - FIELD.height * scale) / 2 };
   }
 
+  // A hex colour with an alpha, for the per-realm dark overlay.
+  function hexA(hex, a) {
+    const r = Number.parseInt(hex.slice(1, 3), 16);
+    const g = Number.parseInt(hex.slice(3, 5), 16);
+    const b = Number.parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
   function frame() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#07080d';
@@ -54,17 +68,17 @@ export function createRenderer(canvas) {
     ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
   }
 
-  function drawBackground(time) {
+  function drawBackground(time, realm) {
     const g = ctx.createRadialGradient(
       FIELD.width / 2, FIELD.height / 2, 40,
       FIELD.width / 2, FIELD.height / 2, 620,
     );
-    g.addColorStop(0, '#171a2c');
-    g.addColorStop(0.6, '#0e1120');
-    g.addColorStop(1, '#07080d');
+    g.addColorStop(0, realm.bg[0]);
+    g.addColorStop(0.6, realm.bg[1]);
+    g.addColorStop(1, realm.bg[2]);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = realm.star;
     for (const st of stars) {
       ctx.globalAlpha = st.a * (0.7 + 0.3 * Math.sin(time * 0.8 + st.x));
       ctx.beginPath();
@@ -72,7 +86,7 @@ export function createRenderer(canvas) {
       ctx.fill();
     }
     ctx.globalAlpha = 1;
-    ctx.strokeStyle = 'rgba(90, 110, 90, 0.35)';
+    ctx.strokeStyle = realm.tuft;
     ctx.lineWidth = 1.5;
     for (const t of tufts) {
       ctx.beginPath();
@@ -83,7 +97,7 @@ export function createRenderer(canvas) {
       ctx.stroke();
     }
     // Faint standing stones ring the glade.
-    ctx.fillStyle = 'rgba(120, 130, 160, 0.28)';
+    ctx.fillStyle = realm.stone;
     for (let i = 0; i < 8; i += 1) {
       const a = (i / 8) * Math.PI * 2 + 0.4;
       const x = FIELD.width / 2 + Math.cos(a) * 420;
@@ -94,12 +108,12 @@ export function createRenderer(canvas) {
     }
   }
 
-  function drawLantern(state, time) {
-    const hpFrac = state.lanternHp / LANTERN.maxHp;
+  function drawLantern(state, time, realm) {
+    const hpFrac = state.lanternHp / state.lanternMaxHp;
     const flicker = 1 + Math.sin(time * 7) * 0.04 + Math.sin(time * 13.7) * 0.03;
     const r = LANTERN.radius * flicker;
     const glow = ctx.createRadialGradient(LANTERN.x, LANTERN.y, 4, LANTERN.x, LANTERN.y, 90 * flicker);
-    glow.addColorStop(0, 'rgba(255, 215, 107, 0.85)');
+    glow.addColorStop(0, realm.glow);
     glow.addColorStop(0.35, 'rgba(255, 170, 60, 0.28)');
     glow.addColorStop(1, 'rgba(255, 170, 60, 0)');
     ctx.fillStyle = glow;
@@ -150,7 +164,17 @@ export function createRenderer(canvas) {
     ctx.beginPath();
     if (e.kind === 'crawler') {
       ctx.ellipse(0, 0, e.radius, e.radius * 0.75, 0, 0, Math.PI * 2);
-    } else if (e.kind === 'brute' || e.kind === 'king') {
+    } else if (e.kind === 'mirelurker') {
+      // A darting diamond.
+      ctx.moveTo(0, -e.radius);
+      ctx.lineTo(e.radius, 0);
+      ctx.lineTo(0, e.radius);
+      ctx.lineTo(-e.radius, 0);
+      ctx.closePath();
+    } else if (e.kind === 'wight') {
+      // An armoured square.
+      ctx.rect(-e.radius * 0.85, -e.radius * 0.85, e.radius * 1.7, e.radius * 1.7);
+    } else if (e.kind === 'brute' || e.kind === 'king' || e.kind === 'queen') {
       ctx.moveTo(0, -e.radius);
       ctx.lineTo(e.radius * 0.85, e.radius * 0.6);
       ctx.lineTo(-e.radius * 0.85, e.radius * 0.6);
@@ -160,6 +184,18 @@ export function createRenderer(canvas) {
     }
     ctx.fill();
     ctx.globalAlpha = 1;
+    // The Mire Queen wears a crown of thorns.
+    if (e.kind === 'queen') {
+      ctx.fillStyle = '#d8fff2';
+      for (let k = -1; k <= 1; k += 1) {
+        ctx.beginPath();
+        ctx.moveTo(k * e.radius * 0.45 - 5, -e.radius * 0.7);
+        ctx.lineTo(k * e.radius * 0.45, -e.radius * 1.25);
+        ctx.lineTo(k * e.radius * 0.45 + 5, -e.radius * 0.7);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
     // Glowing eyes, always facing the lantern.
     const a = Math.atan2(LANTERN.y - e.y, LANTERN.x - e.x);
     const ex = Math.cos(a) * e.radius * 0.35;
@@ -234,11 +270,11 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function drawDarkness(state) {
+  function drawDarkness(state, realm) {
     dctx.setTransform(1, 0, 0, 1, 0, 0);
     dctx.globalCompositeOperation = 'source-over';
     dctx.clearRect(0, 0, FIELD.width, FIELD.height);
-    dctx.fillStyle = DARK;
+    dctx.fillStyle = hexA(realm.bg[1], realm.dark);
     dctx.fillRect(0, 0, FIELD.width, FIELD.height);
     dctx.globalCompositeOperation = 'destination-out';
     const lightR = state ? state.lightRadius : LANTERN.lightFull;
@@ -278,15 +314,16 @@ export function createRenderer(canvas) {
     }
   }
 
-  function drawHud(world, best) {
+  function drawHud(world, best, extras) {
     const s = world.state;
     const p = s.player;
+    const realm = extras.realm;
     ctx.textAlign = 'left';
-    bar(12, 10, 220, 16, s.lanternHp / LANTERN.maxHp, s.lanternHp > 30 ? '#ffd76b' : '#ff5b6b', `LANTERN ${Math.ceil(s.lanternHp)}`);
+    bar(12, 10, 220, 16, s.lanternHp / s.lanternMaxHp, s.lanternHp > 30 ? '#ffd76b' : '#ff5b6b', `LANTERN ${Math.ceil(s.lanternHp)}`);
     bar(12, 30, 220, 16, p.hp / s.stats.maxHp, p.hp > 30 ? '#7dff9b' : '#ff5b6b', `KEEPER ${Math.ceil(p.hp)}`);
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 20px sans-serif';
-    ctx.fillText(`WAVE ${Math.max(1, s.wave)} / ${WAVES}`, 12, 68);
+    ctx.fillText(s.endless ? `ENDLESS WAVE ${s.wave}` : `WAVE ${Math.max(1, s.wave)} / ${WAVES}`, 12, 68);
     ctx.font = 'bold 16px sans-serif';
     ctx.fillText(`SCORE ${s.score}`, 12, 90);
     if (s.combo > 1) {
@@ -299,7 +336,8 @@ export function createRenderer(canvas) {
     ctx.font = '13px sans-serif';
     ctx.fillText(`BEST ${Math.max(best, s.score)}`, FIELD.width - 12, 24);
     ctx.fillText(`KILLS ${s.kills}   EMBERS ${s.embers}`, FIELD.width - 12, 44);
-    ctx.fillText('P pause · M mute', FIELD.width - 12, 64);
+    ctx.fillText(`REALM ${realm.num} · ${realm.name}`, FIELD.width - 12, 64);
+    ctx.fillText(`${extras.difficulty.name}  ·  P pause · M mute`, FIELD.width - 12, 84);
     if (s.boss) {
       const b = s.boss;
       ctx.textAlign = 'center';
@@ -326,7 +364,11 @@ export function createRenderer(canvas) {
     ctx.strokeRect(x, y, w, h);
   }
 
-  function drawTitle(world, best) {
+  function drawTitle(world, best, extras) {
+    const selected = extras.difficulty;
+    const meta = extras.meta;
+    const rank = rankFor(meta.bank);
+    const next = nextRank(meta.bank);
     ctx.fillStyle = 'rgba(4, 6, 16, 0.55)';
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
     ctx.textAlign = 'center';
@@ -335,27 +377,58 @@ export function createRenderer(canvas) {
     ctx.fillText('LANTERNKEEP', FIELD.width / 2, 150);
     ctx.fillStyle = '#fff';
     ctx.font = '20px sans-serif';
-    ctx.fillText('Defend the last light. Ten waves. No dawn.', FIELD.width / 2, 188);
+    ctx.fillText('Defend the last light. Three realms. Three bosses. No dawn.', FIELD.width / 2, 188);
     ctx.font = '16px sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillText('WASD / arrows to move · Mouse to aim · Hold click or Space to shoot', FIELD.width / 2, 250);
-    ctx.fillText('Shades that reach the lantern drain its light. Shades inside the light burn faster.', FIELD.width / 2, 276);
-    ctx.fillText('Between waves, pick one of three upgrades. Beat wave 10 to win.', FIELD.width / 2, 302);
+    ctx.fillText('WASD / arrows to move · Mouse to aim · Hold click or Space to shoot', FIELD.width / 2, 246);
+    ctx.fillText('Shades that reach the lantern drain its light. Shades inside the light burn faster.', FIELD.width / 2, 272);
+    ctx.fillText('Between waves, pick one of three boons from twenty. Beat wave 10 — or keep going into Endless Night.', FIELD.width / 2, 298);
+    ctx.fillStyle = '#ffe066';
+    ctx.font = 'bold 17px sans-serif';
+    ctx.fillText('3 REALMS · 3 BOSSES · 20 BOONS · 3 DIFFICULTIES · ENDLESS NIGHT', FIELD.width / 2, 336);
     ctx.fillStyle = '#ffe066';
     ctx.font = 'bold 20px sans-serif';
-    ctx.fillText(best > 0 ? `BEST SCORE ${best}` : 'CLICK OR PRESS ENTER TO BEGIN', FIELD.width / 2, 360);
+    ctx.fillText(best > 0 ? `BEST SCORE ${best}` : 'CLICK OR PRESS ENTER TO BEGIN', FIELD.width / 2, 372);
     if (best > 0) {
       ctx.fillStyle = '#fff';
       ctx.font = '16px sans-serif';
-      ctx.fillText('Click or press Enter to begin', FIELD.width / 2, 388);
+      ctx.fillText('Click or press Enter to begin', FIELD.width / 2, 398);
     }
+    // Difficulty rows: 1 Ember, 2 Keeper, 3 Nightfall. Click or press 1–3.
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '14px sans-serif';
+    ctx.fillText('CHOOSE YOUR NIGHT — press 1, 2 or 3, or click a row', FIELD.width / 2, 428);
+    DIFFICULTY_ORDER.forEach((id, i) => {
+      const d = DIFFICULTIES[id];
+      const y = DIFFICULTY_ROWS.y + i * (DIFFICULTY_ROWS.h + DIFFICULTY_ROWS.gap);
+      const isSel = d.id === selected.id;
+      if (isSel) {
+        ctx.fillStyle = 'rgba(255, 215, 107, 0.18)';
+        ctx.fillRect(DIFFICULTY_ROWS.x, y, DIFFICULTY_ROWS.w, DIFFICULTY_ROWS.h);
+        ctx.strokeStyle = '#ffd76b';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(DIFFICULTY_ROWS.x, y, DIFFICULTY_ROWS.w, DIFFICULTY_ROWS.h);
+      }
+      ctx.fillStyle = isSel ? '#ffd76b' : 'rgba(255,255,255,0.85)';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillText(`[${i + 1}] ${d.name} — ${d.desc}`, FIELD.width / 2, y + 14);
+    });
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.font = '14px sans-serif';
+    ctx.fillText(
+      `EMBER BANK ${meta.bank} · RANK ${rank.title} (+${rank.bonus} lantern)` +
+      (next ? ` · next rank ${next.title} at ${next.at} embers` : ' · highest rank'),
+      FIELD.width / 2, 524,
+    );
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
     ctx.font = '13px sans-serif';
     ctx.fillText('P pause · M mute · R restart on the end screens', FIELD.width / 2, 560);
     void world;
   }
 
-  function drawUpgrade(world) {
+  function drawUpgrade(world, extras) {
+    const taken = Object.values(world.state.taken).reduce((a, b) => a + b, 0);
+    const realm = extras.realm;
     ctx.fillStyle = 'rgba(4, 6, 16, 0.72)';
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
     ctx.textAlign = 'center';
@@ -365,6 +438,9 @@ export function createRenderer(canvas) {
     ctx.fillStyle = '#fff';
     ctx.font = '16px sans-serif';
     ctx.fillText('Click a card, or press 1, 2 or 3.', FIELD.width / 2, 140);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '14px sans-serif';
+    ctx.fillText(`REALM ${realm.num} · ${realm.name} — BOON ${taken} OF ${UPGRADES.length}`, FIELD.width / 2, 168);
     const cards = world.state.offered;
     const cw = 240;
     const ch = 150;
@@ -410,7 +486,7 @@ export function createRenderer(canvas) {
     ctx.fillText('Press P or Escape to keep playing', FIELD.width / 2, 320);
   }
 
-  function drawEnd(world, best, won) {
+  function drawEnd(world, best, won, extras) {
     const s = world.state;
     ctx.fillStyle = 'rgba(4, 6, 16, 0.72)';
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
@@ -427,9 +503,23 @@ export function createRenderer(canvas) {
     ctx.font = '18px sans-serif';
     ctx.fillText(`SCORE ${s.score}   ·   BEST ${Math.max(best, s.score)}`, FIELD.width / 2, 250);
     ctx.fillText(`WAVE ${s.wave} / ${WAVES}   ·   KILLS ${s.kills}   ·   EMBERS ${s.embers}`, FIELD.width / 2, 282);
-    ctx.fillStyle = '#ffe066';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText('Press R or click to play again', FIELD.width / 2, 340);
+    const rank = rankFor(extras.meta.bank);
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.font = '15px sans-serif';
+    ctx.fillText(`EMBERS BANKED ${s.embers} · BANK ${extras.meta.bank} · RANK ${rank.title}`, FIELD.width / 2, 312);
+    if (won) {
+      panel(ENDLESS_BUTTON.x, ENDLESS_BUTTON.y, ENDLESS_BUTTON.w, ENDLESS_BUTTON.h);
+      ctx.fillStyle = '#ffe066';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('ENDLESS NIGHT — press E or click', FIELD.width / 2, ENDLESS_BUTTON.y + 28);
+      ctx.fillStyle = '#ffe066';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText('Press R or click to play again', FIELD.width / 2, 470);
+    } else {
+      ctx.fillStyle = '#ffe066';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText('Press R or click to play again', FIELD.width / 2, 340);
+    }
     void world;
   }
 
@@ -440,7 +530,7 @@ export function createRenderer(canvas) {
     const shakeX = state.shake > 0 ? (Math.random() - 0.5) * state.shake : 0;
     const shakeY = state.shake > 0 ? (Math.random() - 0.5) * state.shake : 0;
     ctx.translate(shakeX, shakeY);
-    drawBackground(time);
+    drawBackground(time, extras.realm);
     // Burning ground.
     for (const f of state.fires) {
       ctx.globalAlpha = Math.min(0.7, f.life);
@@ -453,7 +543,7 @@ export function createRenderer(canvas) {
       ctx.fill();
     }
     ctx.globalAlpha = 1;
-    drawLantern(state, time);
+    drawLantern(state, time, extras.realm);
     for (const pk of state.pickups) {
       const bob = Math.sin(time * 4 + pk.x) * 2;
       if (pk.kind === 'ember') {
@@ -485,7 +575,7 @@ export function createRenderer(canvas) {
       ctx.fill();
     }
     // The dark, with holes for the lantern and the Keeper.
-    drawDarkness({ lightRadius: extras.lightRadius, player: state.player });
+    drawDarkness({ lightRadius: extras.lightRadius, player: state.player }, extras.realm);
     // Glowing things shine through the dark: bullets, particles, and the
     // shades' own glow and eyes, so the dark never hides a threat.
     ctx.globalCompositeOperation = 'lighter';
@@ -537,13 +627,13 @@ export function createRenderer(canvas) {
     }
     ctx.globalAlpha = 1;
     if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED || screen === SCREEN_UPGRADE) {
-      drawHud(world, best);
+      drawHud(world, best, extras);
     }
-    if (screen === SCREEN_TITLE) drawTitle(world, best);
-    if (screen === SCREEN_UPGRADE) drawUpgrade(world);
+    if (screen === SCREEN_TITLE) drawTitle(world, best, extras);
+    if (screen === SCREEN_UPGRADE) drawUpgrade(world, extras);
     if (screen === SCREEN_PAUSED) drawPaused();
-    if (screen === SCREEN_OVER) drawEnd(world, best, false);
-    if (screen === SCREEN_WIN) drawEnd(world, best, true);
+    if (screen === SCREEN_OVER) drawEnd(world, best, false, extras);
+    if (screen === SCREEN_WIN) drawEnd(world, best, true, extras);
   }
 
   return { draw, resize, get view() { return view; } };
